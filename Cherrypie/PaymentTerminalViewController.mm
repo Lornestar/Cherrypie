@@ -20,13 +20,19 @@
 #import "ECSlidingViewController.h"
 #import "MenuViewController.h"
 #import "WelcomeViewController.h"
+#import "LGBluetooth.h"
+
+NSString *TRANSFER_CHARACTERISTIC_UUID = @"EE48ED21-5355-6D09-FA06-799FE3EDCF8A";
+NSString *TRANSFER_SERVICE_UUID = @"EE48ED21-5355-6D09-FA06-799FE3EDCF8A";
 
 @interface PaymentTerminalViewController ()
+
+
 
 @end
 
 @implementation PaymentTerminalViewController
-@synthesize currentnumericposition,currentnumericstring, menubtn, lblamount,appdel,imgqr,vwbuttons,btncancel, lbldemo, btnsimulate, currentterminalkey,tblview,txlist,lblemail;
+@synthesize currentnumericposition,currentnumericstring, menubtn, lblamount,appdel,imgqr,vwbuttons,btncancel, lbldemo, btnsimulate, currentterminalkey,tblview,txlist,lblemail,edisplayservice,edisplay;
 
 - (id)initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil
 {
@@ -84,6 +90,19 @@
     }
     
     lblemail.text = appdel.currentemail;
+    
+    //BLE init
+    _centralManager = [[CBCentralManager alloc] initWithDelegate:self queue:nil];
+    _data = [[NSMutableData alloc] init];
+    
+    [[LGCentralManager sharedInstance] scanForPeripheralsByInterval:4
+                                                         completion:^(NSArray *peripherals)
+     {
+         // If we found any peripherals sending to test
+         if (peripherals.count) {
+             [self testPeripheral:peripherals[0]];
+         }
+     }];
 }
 
 -(void)CloseAllPopUpViewControllers{
@@ -232,6 +251,8 @@
 
 - (IBAction)btnRefresh_Clicked:(id)sender {
     [self GetTxlist];
+    
+    
 }
 
 - (IBAction)btnSettings_Clicked:(id)sender {
@@ -369,7 +390,12 @@
     //imgQRcode = [[UIImageView alloc] initWithImage:qrcodeImage];
     imgqr.image = qrcodeImage;
     
-    
+    //try peripheral
+    NSData *imageData = UIImagePNGRepresentation(imgqr.image);
+    //[_discoveredPeripheral writeValue:imageData forCharacteristic:TRANSFER_CHARACTERISTIC_UUID type:_discoveredPeripheral];
+    [LGUtils writeData:imageData charactUUID:edisplay.UUIDString serviceUUID:edisplayservice.UUIDString peripheral:edisplay completion:^(NSError *error) {
+            NSLog(@"Error : %@", error);
+        }];
 }
 
 -(void)SubscribePusher{
@@ -452,6 +478,162 @@
     return cell;
 }
 
+#pragma mark - BLE Functions
+- (void)centralManagerDidUpdateState:(CBCentralManager *)central {
+    // You should test all scenarios
+    if (central.state != CBCentralManagerStatePoweredOn) {
+        return;
+    }
+    
+    if (central.state == CBCentralManagerStatePoweredOn) {
+        // Scan for devices
+        //[_centralManager scanForPeripheralsWithServices:@[[CBUUID UUIDWithString:TRANSFER_CHARACTERISTIC_UUID]] options:@{ CBCentralManagerScanOptionAllowDuplicatesKey : @YES }];
+        [_centralManager scanForPeripheralsWithServices:nil options:@{ CBCentralManagerScanOptionAllowDuplicatesKey : @YES }];
+        NSLog(@"Scanning started");
+    }
+}
 
+- (void)centralManager:(CBCentralManager *)central didDiscoverPeripheral:(CBPeripheral *)peripheral advertisementData:(NSDictionary *)advertisementData RSSI:(NSNumber *)RSSI {
+    
+    NSLog(@"Discovered %@ at %@", peripheral.name, RSSI);
+    NSLog(@"Discovered %@ - UUID", peripheral.UUID);
+    
+    if (_discoveredPeripheral != peripheral) {
+        // Save a local copy of the peripheral, so CoreBluetooth doesn't get rid of it
+        _discoveredPeripheral = peripheral;
+        
+        // And connect
+        NSLog(@"Connecting to peripheral %@", peripheral);
+        [_centralManager connectPeripheral:peripheral options:nil];
+    }
+}
+
+- (void)centralManager:(CBCentralManager *)central didFailToConnectPeripheral:(CBPeripheral *)peripheral error:(NSError *)error {
+    NSLog(@"Failed to connect");
+    [self cleanup];
+}
+
+- (void)cleanup {
+    
+    // See if we are subscribed to a characteristic on the peripheral
+    if (_discoveredPeripheral.services != nil) {
+        for (CBService *service in _discoveredPeripheral.services) {
+            if (service.characteristics != nil) {
+                for (CBCharacteristic *characteristic in service.characteristics) {
+                    if ([characteristic.UUID isEqual:[CBUUID UUIDWithString:TRANSFER_CHARACTERISTIC_UUID]]) {
+                        if (characteristic.isNotifying) {
+                            [_discoveredPeripheral setNotifyValue:NO forCharacteristic:characteristic];
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    
+    [_centralManager cancelPeripheralConnection:_discoveredPeripheral];
+}
+
+- (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
+    NSLog(@"Connected");
+    
+    [_centralManager stopScan];
+    NSLog(@"Scanning stopped");
+    
+    [_data setLength:0];
+    
+    peripheral.delegate = self;
+    
+    [peripheral discoverServices:@[[CBUUID UUIDWithString:TRANSFER_SERVICE_UUID]]];
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverServices:(NSError *)error {
+    if (error) {
+        [self cleanup];
+        return;
+    }
+    
+    for (CBService *service in peripheral.services) {
+        [peripheral discoverCharacteristics:@[[CBUUID UUIDWithString:TRANSFER_CHARACTERISTIC_UUID]] forService:service];
+    }
+    // Discover other characteristics
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didDiscoverCharacteristicsForService:(CBService *)service error:(NSError *)error {
+    if (error) {
+        [self cleanup];
+        return;
+    }
+    
+    for (CBCharacteristic *characteristic in service.characteristics) {
+        if ([characteristic.UUID isEqual:[CBUUID UUIDWithString:TRANSFER_CHARACTERISTIC_UUID]]) {
+            [peripheral setNotifyValue:YES forCharacteristic:characteristic];
+        }
+    }
+}
+
+- (void)peripheral:(CBPeripheral *)peripheral didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic error:(NSError *)error {
+    if (error) {
+        NSLog(@"Error");
+        return;
+    }
+    
+    NSString *stringFromData = [[NSString alloc] initWithData:characteristic.value encoding:NSUTF8StringEncoding];
+    
+    // Have we got everything we need?
+    if ([stringFromData isEqualToString:@"EOM"]) {
+        
+        //[_textview setText:[[NSString alloc] initWithData:self.data encoding:NSUTF8StringEncoding]];
+        
+        [peripheral setNotifyValue:NO forCharacteristic:characteristic];
+        
+        [_centralManager cancelPeripheralConnection:peripheral];
+    }
+    
+    [_data appendData:characteristic.value];
+}
+
+- (void)testPeripheral:(LGPeripheral *)peripheral
+{
+    // First of all connecting to peripheral
+    [peripheral connectWithCompletion:^(NSError *error) {
+        // Discovering services of peripheral
+        edisplay = peripheral;
+        
+        [peripheral discoverServicesWithCompletion:^(NSArray *services, NSError *error) {
+            for (LGService *service in services) {
+                edisplayservice = service;
+                // Finding out our service
+                /*if ([service.UUIDString isEqualToString:@"5ec0"]) {
+                    // Discovering characteristics of our service
+                    [service discoverCharacteristicsWithCompletion:^(NSArray *characteristics, NSError *error) {
+                        // We need to count down completed operations for disconnecting
+                        __block int i = 0;
+                        for (LGCharacteristic *charact in characteristics) {
+                            // cef9 is a writabble characteristic, lets test writting
+                            if ([charact.UUIDString isEqualToString:@"cef9"]) {
+                                [charact writeByte:0xFF completion:^(NSError *error) {
+                                    if (++i == 3) {
+                                        // finnally disconnecting
+                                        [peripheral disconnectWithCompletion:nil];
+                                    }
+                                }];
+                            } else {
+                                // Other characteristics are readonly, testing read
+                                [charact readValueWithBlock:^(NSData *data, NSError *error) {
+                                    if (++i == 3) {
+                                        // finnally disconnecting
+                                        [peripheral disconnectWithCompletion:nil];
+                                    }
+                                }];
+                            }
+                        }
+                    }];
+                }*/
+                
+            }
+        }];
+    }];
+}
 
 @end

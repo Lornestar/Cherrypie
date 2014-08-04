@@ -8,8 +8,10 @@
 
 #import <UIKit/UIKit.h>
 #import "AppDelegate.h"
+#import <CoreBluetooth/CoreBluetooth.h>
+#import "LGBluetooth.h"
 
-@interface PaymentTerminalViewController : UIViewController<UITableViewDataSource,UITableViewDelegate>
+@interface PaymentTerminalViewController : UIViewController<UITableViewDataSource,UITableViewDelegate,CBCentralManagerDelegate, CBPeripheralDelegate>
 
 @property (strong, nonatomic) IBOutlet UILabel *lblamount;
 
@@ -37,6 +39,13 @@
 @property (strong, nonatomic) IBOutlet UILabel *lblemail;
 
 @property (strong, nonatomic) IBOutlet UIButton *menubtn;
+
+//BLE stuff
+@property (strong, nonatomic) CBCentralManager *centralManager;
+@property (strong, nonatomic) CBPeripheral *discoveredPeripheral;
+@property (strong, nonatomic) NSMutableData *data;
+@property (strong, nonatomic) LGPeripheral *edisplay;
+@property (strong, nonatomic) LGService *edisplayservice;
 
 -(void)CloseAllPopUpViewControllers;
 
